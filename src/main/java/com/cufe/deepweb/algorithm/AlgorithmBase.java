@@ -4,6 +4,8 @@ import com.cufe.deepweb.common.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.*;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -16,11 +18,21 @@ public abstract class AlgorithmBase {
     private final Logger logger = LoggerFactory.getLogger(AlgorithmBase.class);
     private List<String> qList; //the list which store all seleted queries
     private int qCount; //the new generated query index
+    private Path productPath;
 
-    public AlgorithmBase() {
-        qCount = 0;
+    /**
+     * the name of data saving file for production mode
+     */
+    private static final String DATA_FILE = "qList.dat";
+
+    public AlgorithmBase(Builder builder) {
+        this.productPath = builder.productPath;
         qList = new ArrayList<>();
-        setInitQuery("consume");//set the default initial query, the implementation class can cover this value
+        this.productInit();
+        qCount = qList.size();
+        if (this.qList.size() == 0) {
+            setInitQuery("consume");//set the default initial query, the implementation class can cover this value
+        }
     }
     /*
     for set initial query when algorithm initiates
@@ -47,8 +59,10 @@ public abstract class AlgorithmBase {
         this.qList.addAll(list);
         this.qCount = qList.size();
     }
-    /*
-    使用该算法时直接调用该方法，不必关心具体算法实现
+
+    /**
+     * if return null that represent something error happen
+     * @return
      */
     public final String getNextQuery() {
         logger.trace("start to infer query");
@@ -58,6 +72,7 @@ public abstract class AlgorithmBase {
         // invoke the implementation class's override method generateQuery() by dynamic binding
         if(qCount != 0) {
             String nextQuery = generateQuery();
+            if (nextQuery == null) return null;//something error happen
             logger.trace("get query {}", nextQuery);
             qList.add(nextQuery);
         }
@@ -74,8 +89,58 @@ public abstract class AlgorithmBase {
     */
     protected abstract String generateQuery();
 
+
+    /**
+     * do some initial operations for production mode
+     */
+    private void productInit() {
+        if (this.productPath != null) {
+            File f = this.productPath.resolve(DATA_FILE).toFile();
+            if(f.exists()) {
+                logger.info("start to read qList information from file {}", f.getAbsolutePath());
+                try (BufferedReader bufferedReader = new BufferedReader(new FileReader(f))) {
+                    List<String> qList = new ArrayList<>();
+                    bufferedReader.lines().forEach(line -> qList.add(line));
+                    logger.info("the size of qList read from file is " + qList.size());
+                    this.setqList(qList);
+                } catch (IOException ex) {
+                    logger.error("Exception happen when read qList object file");
+                } finally {
+                    logger.info("read qList information finish");
+                    f.delete();
+                }
+            }
+        }
+    }
+
     /**
      * the implementation class can override this method for doing some close operations
      */
-    public void close(){};
+    public void close(){
+        if(this.productPath != null) {
+            System.out.println("start to store qList information");
+            File f = this.productPath.resolve(DATA_FILE).toFile();
+            if (f.exists()) {
+                System.out.println("the qList data saving file has existed, exit directly");
+                return;
+            }
+            try (BufferedWriter bufferedWriter = new BufferedWriter(new FileWriter(f))) {
+                for (String e : this.getqList()) {
+                    bufferedWriter.write(e);
+                    bufferedWriter.newLine();
+                }
+            } catch (IOException ex) {
+                //ignored
+            }
+            System.out.println("store qList information finish");
+        }
+    }
+    public static class Builder {
+        private Path productPath;
+        public Builder setProductPath(Path productPath) {
+            this.productPath = productPath;
+            return this;
+        }
+        public AlgorithmBase build() {return null;}
+    }
 }

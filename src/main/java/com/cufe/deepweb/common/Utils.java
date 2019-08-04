@@ -39,11 +39,37 @@ public final class Utils {
         }
     }
     public static void save2File(InputStream stream, String filePath) throws IOException {
-        try (BufferedOutputStream bf = new BufferedOutputStream(new FileOutputStream(filePath))) {
-            IOUtils.copy(stream, bf);
+
+        try (BufferedOutputStream bo = new BufferedOutputStream(new FileOutputStream(filePath))) {
+            //use a buffer of 8192 bytes, no need to use the default BufferedInputStream
+            byte[] buffer = new byte[8192];
+            int limit = 0;
+            while (true) {
+                int len = 0;
+                try {
+                    len = stream.read(buffer);
+                    limit = 0;
+                } catch (IOException ex) {
+                    limit++;
+                    if (limit >= 3) {
+                        throw  ex;
+                    }
+                }
+                if (len == -1) break;
+                bo.write(buffer, 0, len);
+            }
+        } finally {
+            stream.close();
         }
+
     }
 
+    public static void deleteFile(String fileName) {
+        File f = new File(fileName);
+        if (f.exists()) {
+            f.delete();
+        }
+    }
     /**
      * 判断集合内任务是否运行完毕，同时对运行完毕的任务进行清理
      * @param runSet

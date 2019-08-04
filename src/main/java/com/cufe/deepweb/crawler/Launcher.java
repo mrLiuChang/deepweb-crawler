@@ -1,9 +1,12 @@
 package com.cufe.deepweb.crawler;
 
 import com.cufe.deepweb.algorithm.AlgorithmBase;
+import com.cufe.deepweb.algorithm.AllInAlgorithm;
 import com.cufe.deepweb.algorithm.LinearIncrementalAlgorithm;
+import com.cufe.deepweb.common.dedu.RAMStrDedutor;
 import com.cufe.deepweb.common.orm.model.*;
 import com.cufe.deepweb.crawler.branch.ApiBaseScheduler;
+import com.cufe.deepweb.crawler.branch.JsonBaseScheduler;
 import com.cufe.deepweb.crawler.branch.Scheduler;
 import com.cufe.deepweb.common.http.client.ApacheClient;
 import com.cufe.deepweb.common.http.client.CusHttpClient;
@@ -13,11 +16,13 @@ import com.cufe.deepweb.common.index.IndexClient;
 import com.cufe.deepweb.crawler.branch.UrlBaseScheduler;
 import com.cufe.deepweb.crawler.service.infos.InfoLinkService;
 import com.cufe.deepweb.common.dedu.Deduplicator;
-import com.cufe.deepweb.common.dedu.RAMMD5Dedutor;
 import com.cufe.deepweb.common.orm.Orm;
+import com.cufe.deepweb.crawler.service.infos.info.Info;
 import com.cufe.deepweb.crawler.service.querys.ApiBaseQueryLinkService;
+import com.cufe.deepweb.crawler.service.querys.JsonBaseQueryLinkService;
 import com.cufe.deepweb.crawler.service.querys.UrlBaseQueryLinkService;
 import com.gargoylesoftware.htmlunit.CookieManager;
+import com.gargoylesoftware.htmlunit.util.Cookie;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -89,14 +94,22 @@ public final class Launcher {
         //initialize the service to deal with queryLinks
         //initialize the scheduler thread
         if (Constant.urlBaseConf != null) {
+            logger.info("prepare urlBaseScheduler");
             UrlBaseQueryLinkService urlBaseQueryLinkService = new UrlBaseQueryLinkService(webBrowser, dedu);
             scheduler = new UrlBaseScheduler(alg, urlBaseQueryLinkService, infoLinkService, msgQueue);
-        } else {
+        } else if (Constant.apiBaseConf != null) {
+            logger.info("prepare apiBaseScheduler");
             ApiBaseQueryLinkService apiBaseQueryLinkService = new ApiBaseQueryLinkService(webBrowser, dedu);
-            scheduler = new ApiBaseScheduler(alg, apiBaseQueryLinkService, infoLinkService, msgQueue);
+            scheduler = new ApiBaseScheduler(alg, apiBaseQueryLinkService, infoLinkService);
+        } else if (Constant.jsonBaseConf != null) {
+            logger.info("prepare jsonBaseScheduler");
+            JsonBaseQueryLinkService jsonBaseQueryLinkService = new JsonBaseQueryLinkService(webBrowser, dedu, httpClient);
+            scheduler = new JsonBaseScheduler(alg, jsonBaseQueryLinkService, infoLinkService, msgQueue);
+        } else {
+            logger.error("can't judge to use which scheduler, exit");
+            System.exit(1);
+            return;
         }
-
-
 
         //when scheduler thread start to run, everything startup
         scheduler.start();
@@ -111,17 +124,18 @@ public final class Launcher {
      *        [1] jdbc-url
      *        [2] username
      *        [3] password
+     *        [4] all-in-num: specified for the all-in mode
      */
     private static void init(final String[] args) {
         Options options = new Options();
-        options.addOption(Option.builder("i")
+        options.addOption(Option.builder("wi")
             .longOpt("web-id")
             .hasArg()
             .required()
             .desc("the specified website ID")
             .build()
         );
-        options.addOption(Option.builder("l")
+        options.addOption(Option.builder("jl")
             .longOpt("jdbc-url")
             .hasArg()
             .required()
@@ -142,6 +156,12 @@ public final class Launcher {
             .desc("the specified database password")
             .build()
         );
+        options.addOption(Option.builder("ain")
+                .longOpt("all-in-num")
+                .hasArg()
+                .desc("the number of turns in the all-in algorithm")
+                .build()
+        );
         CommandLineParser parser = new DefaultParser();
         CommandLine cmd = null;
         try {
@@ -150,6 +170,8 @@ public final class Launcher {
             logger.error("error happen when parse commandline args", ex);
             System.exit(1);
         }
+
+        Constant.ALL_IN_NUM = Integer.parseInt(cmd.getOptionValue("all-in-num", "0"));
 
         //config mysql
         String webIDStr = cmd.getOptionValue("web-id");
@@ -165,6 +187,7 @@ public final class Launcher {
         //config website info
         Sql2o sql2o = Orm.getSql2o();
         try (Connection conn=sql2o.open()) {
+            conn.setRollbackOnException(true);
             //there should have one row corresponding to the webID in database
             String sql = "select * from website where webId=:webID";
             Constant.webSite = conn.createQuery(sql).addParameter("webID", webID).executeAndFetchFirst(WebSite.class);
@@ -175,6 +198,9 @@ public final class Launcher {
             } else if (Constant.webSite.getBase() == Constant.API_BASED) {
                 sql = "select * from apiBaseConf where webId = :webID";
                 Constant.apiBaseConf = conn.createQuery(sql).addParameter("webID", webID).executeAndFetchFirst(ApiBaseConf.class);
+            } else if (Constant.webSite.getBase() == Constant.JSON_BASED) {
+                sql = "select * from jsonBaseConf where webId =:webID";
+                Constant.jsonBaseConf = conn.createQuery(sql).addParameter("webID", webID).executeAndFetchFirst(JsonBaseConf.class);
             } else {
                 logger.error("the base value in website table is undefined, exit");
                 System.exit(1);
@@ -221,7 +247,7 @@ public final class Launcher {
             logger.error("the website information corresponding to the webID can't be find，program exit");
             System.exit(1);
         }
-        if (Constant.apiBaseConf == null && Constant.urlBaseConf == null) {
+        if (Constant.apiBaseConf == null && Constant.urlBaseConf == null && Constant.jsonBaseConf == null) {
             logger.error("both urlBaseConf and apiBaseConf are not exist, exit");
             System.exit(1);
         }
@@ -238,9 +264,12 @@ public final class Launcher {
             workFilePath = Constant.webSite.getWorkFile();
             File f = new File(workFilePath);
 
+            if (!f.exists()) {
+                f.mkdirs();
+            }
             //if directory no exist or if this is not a directory or if this directory can be written by the user of crawler
-            if (!f.exists() || !f.isDirectory() || !f.canWrite()) {
-                logger.error("the work file should be a existed directory，and the owner of this program should have right to write");
+            if (!f.isDirectory() || !f.canWrite()) {
+                logger.error("the work file:{} should be a writable directory，and the owner of this program should have right to write", workFilePath);
                 System.exit(1);
             }
         }
@@ -249,7 +278,7 @@ public final class Launcher {
         //configure the message queue
         msgQueue = new LinkedBlockingDeque(Constant.QUEUE_SIZE);
         File f = Paths.get(Constant.webSite.getWorkFile(), Constant.DATA_ADDR, MSG_DATA_NAME).toFile();
-        List<String> msgList = null;
+        List<Info> msgList = null;
         //if message queue stored file exist, load the data into memory
         if (f.exists()) {
             logger.info("read msg from file {}", f.getAbsolutePath());
@@ -265,16 +294,16 @@ public final class Launcher {
         //insert the data into message queue
         if (msgList != null) {
             msgList.forEach(link -> {
-                if (StringUtils.isNotBlank(link)) {//if this link is valid
-                    msgQueue.offer(link);
-                }
+                msgQueue.offer(link);
             });
         }
 
         //configure the index client to use ansj_seg analyzer
         indexClient = new IndexClient.Builder(Paths.get(Constant.webSite.getWorkFile(),Constant.FT_INDEX_ADDR)).setAnalyzer(IndexClient.AnalyzerTpye.cn).build();
         //configure the RAM md5 deduplicater
-        dedu = new RAMMD5Dedutor(Paths.get(Constant.webSite.getWorkFile(), Constant.DATA_ADDR));
+        //dedu = new RAMMD5Dedutor(Paths.get(Constant.webSite.getWorkFile(), Constant.DATA_ADDR));
+
+        dedu = new RAMStrDedutor(Paths.get(Constant.webSite.getWorkFile(), Constant.DATA_ADDR));
 
         //the global cookie manager
         CookieManager cookieManager = new CookieManager();
@@ -286,6 +315,10 @@ public final class Launcher {
                 logger.error("detect the login information, but can't login, please check the configuration");
                 System.exit(1);
             }
+            logger.info("print cookie after login");
+            for (Cookie cookie : cookieManager.getCookies()) {
+                logger.info("cookie:{}", cookie.toString());
+            }
         }
 
         //configure the HTTP client
@@ -294,8 +327,16 @@ public final class Launcher {
                 .setTimeout(Constant.extraConf.getTimeout())
                 .build();
 
+
         //initialize the strategy algorithm, this algorithm would only be used in scheduler thread
-        alg = new LinearIncrementalAlgorithm.Builder(indexClient, dedu).setProductPath(Paths.get(Constant.webSite.getWorkFile(), Constant.DATA_ADDR)).build();
+        AlgorithmBase.Builder builder;
+        if (Constant.ALL_IN_NUM == 0) {
+            builder = new LinearIncrementalAlgorithm.Builder(indexClient, dedu);
+        } else {
+            builder = new AllInAlgorithm.Builder().setIndexClient(indexClient).setAllInNum(Constant.ALL_IN_NUM).setLowBound(0.002).setUpBound(0.05);
+        }
+        builder.setProductPath(Paths.get(Constant.webSite.getWorkFile(), Constant.DATA_ADDR));
+        alg = builder.build();
 
         //after initialize all the utility, set the current pid to db
         try (Connection conn = sql2o.open()) {

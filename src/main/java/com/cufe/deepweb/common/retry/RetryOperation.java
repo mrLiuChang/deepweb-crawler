@@ -1,5 +1,5 @@
 package com.cufe.deepweb.common.retry;
 
-public abstract class RetryOperation<T> {
-    public abstract T execute();
+public interface RetryOperation<T> {
+    T execute() throws Exception;
 }

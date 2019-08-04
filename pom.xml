@@ -7,25 +7,11 @@
     <artifactId>crawler</artifactId>
     <version>1.0-SNAPSHOT</version>
 
-    <profiles>
-        <!--开发环境，默认激活-->
-        <profile>
-            <id>dev</id>
-            <properties>
-                <running.env>dev</running.env>
-            </properties>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
-        </profile>
-        <!--生产环境-->
-        <profile>
-            <id>prd</id>
-            <properties>
-                <running.env>prd</running.env>
-            </properties>
-        </profile>
-    </profiles>
+    <properties>
+        <!--for maven plugin use-->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
     <dependencies>
         <!-- https://mvnrepository.com/artifact/org.apache.lucene/lucene-core -->
         <dependency>
@@ -40,11 +26,6 @@
             <artifactId>ansj_lucene6_plug</artifactId>
             <version>5.1.2.0</version>
         </dependency>
-        <!--<dependency>-->
-            <!--<groupId>org.apache.lucene</groupId>-->
-            <!--<artifactId>lucene-analyzers-smartcn</artifactId>-->
-            <!--<version>6.6.1</version>-->
-        <!--</dependency>-->
 
 
         <!-- https://mvnrepository.com/artifact/net.sourceforge.htmlcleaner/htmlcleaner -->
@@ -65,6 +46,7 @@
             <groupId>mysql</groupId>
             <artifactId>mysql-connector-java</artifactId>
             <version>8.0.15</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!--HtmlUnit(headless web browser)-->
@@ -75,13 +57,13 @@
             <version>2.33</version>
         </dependency>
 
-        <!--Selenium web browser-->
-        <!-- https://mvnrepository.com/artifact/org.seleniumhq.selenium/selenium-java -->
-        <dependency>
-            <groupId>org.seleniumhq.selenium</groupId>
-            <artifactId>selenium-java</artifactId>
-            <version>3.141.59</version>
-        </dependency>
+        <!--&lt;!&ndash;Selenium web browser&ndash;&gt;-->
+        <!--&lt;!&ndash; https://mvnrepository.com/artifact/org.seleniumhq.selenium/selenium-java &ndash;&gt;-->
+        <!--<dependency>-->
+            <!--<groupId>org.seleniumhq.selenium</groupId>-->
+            <!--<artifactId>selenium-java</artifactId>-->
+            <!--<version>3.141.59</version>-->
+        <!--</dependency>-->
 
         <!-- https://mvnrepository.com/artifact/org.apache.httpcomponents/httpclient -->
         <dependency>
@@ -149,6 +131,14 @@
             <version>2.11.1</version>
         </dependency>
 
+        <!-- https://mvnrepository.com/artifact/com.fasterxml.jackson.core/jackson-databind -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.9.8</version>
+        </dependency>
+
+
         <!--使用JUnit5-->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -160,7 +150,7 @@
 
     </dependencies>
     <build>
-
+        <finalName>Controller_unstructed</finalName>
         <plugins>
             <!--指定mvn编译器的Java版本-->
             <plugin>
@@ -172,7 +162,8 @@
                     <target>1.9</target>
                 </configuration>
             </plugin>
-            <!--指定编译的jar包的启动入口-->
+
+            <!--构建uber-jar-->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>

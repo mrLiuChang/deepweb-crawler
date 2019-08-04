@@ -1,5 +1,7 @@
 package com.cufe.deepweb.common.http.client;
 
+import com.cufe.deepweb.common.http.client.resp.HtmlContent;
+import com.cufe.deepweb.common.http.client.resp.JsonContent;
 import com.cufe.deepweb.common.http.client.resp.RespContent;
 import com.cufe.deepweb.crawler.Constant;
 import com.gargoylesoftware.htmlunit.CookieManager;
@@ -10,10 +12,8 @@ import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.protocol.HttpClientContext;
-import org.apache.http.conn.HttpHostConnectException;
 import org.apache.http.entity.ContentType;
 import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.DefaultServiceUnavailableRetryStrategy;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.client.StandardHttpRequestRetryHandler;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
@@ -26,7 +26,6 @@ import org.slf4j.LoggerFactory;
 import java.io.*;
 import java.net.ConnectException;
 import java.net.URI;
-import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
@@ -86,9 +85,9 @@ public class ApacheClient implements CusHttpClient {
                 .setRetryHandler(new StandardHttpRequestRetryHandler())
                 .build();
         config = RequestConfig.custom()
-            .setConnectionRequestTimeout(builder.timeout)
-            .setConnectTimeout(builder.timeout)
-            .setSocketTimeout(builder.timeout)
+            .setConnectionRequestTimeout(10 * builder.timeout)
+            .setConnectTimeout(10 * builder.timeout)
+            .setSocketTimeout(10 * builder.timeout)
             .build();
     }
 
@@ -100,7 +99,7 @@ public class ApacheClient implements CusHttpClient {
      * @param response
      * @return
      */
-    private static Optional<String> chechAttachment(HttpResponse response) {
+    private static Optional<String> checkAttachment(HttpResponse response, String charset) {
         Header header = response.getFirstHeader("Content-Disposition");
         if (header != null) {
             HeaderElement[] elements = header.getElements();
@@ -109,6 +108,12 @@ public class ApacheClient implements CusHttpClient {
                 if ((pair = element.getParameterByName("filename")) != null) {
 
                     String fileName = pair.getValue();
+                    try {
+                        fileName = new String(fileName.getBytes(charset), "UTF-8");
+                    } catch (UnsupportedEncodingException ex) {
+                        //ignored
+                    }
+                    logger.trace("filename:{}", fileName);
                     return Optional.ofNullable(fileName);
 
                 }
@@ -116,12 +121,8 @@ public class ApacheClient implements CusHttpClient {
         }
         return Optional.empty();
     }
-    /**
-     * download the content corresponding to the URL
-     * @param URL
-     * @return
-     */
-    public RespContent getContent(String URL) {
+
+    private HttpGet buildBaseHttpGet(String URL) {
         URI uri = null;
         try {
             uri = URI.create(URL);
@@ -132,14 +133,17 @@ public class ApacheClient implements CusHttpClient {
         HttpGet httpGet = new HttpGet(uri);
         httpGet.setConfig(config);
         httpGet.setHeader("user-agent", getUserAgent());
-        try (CloseableHttpResponse response = httpClient.execute(httpGet, httpContext.get())) {
+        return httpGet;
+    }
+    @Override
+    public JsonContent getJSON(String URL) {
+        HttpGet httpGet = buildBaseHttpGet(URL);
+        if (httpGet == null) return null;
+        httpGet.addHeader("Accept", "application/json");
+        try(CloseableHttpResponse response = httpClient.execute(httpGet, httpContext.get())) {
             if (response.getStatusLine().getStatusCode() >= 300) {
-                logger.error("HTTP response: {} {}", response.getStatusLine().getStatusCode(), response.getStatusLine().getReasonPhrase());
+                logger.error("URL:{} HTTP response {}", URL, response.getStatusLine());
             } else {
-                Optional<String> fileNameOp;
-                if ((fileNameOp = chechAttachment(response)).isPresent()) {
-                    return RespContent.asStream(fileNameOp.get(), response.getEntity().getContent());
-                }
                 HttpEntity entity = response.getEntity();
                 ContentType contentType = ContentType.getOrDefault(entity);
 
@@ -148,19 +152,78 @@ public class ApacheClient implements CusHttpClient {
                 if(charset == null || StringUtils.isBlank(charset.name())) {
                     charset = Charset.forName(Constant.extraConf.getCharset());
                 }
-                return RespContent.asString(EntityUtils.toString(entity, charset));
+
+                return RespContent.asJson(EntityUtils.toString(entity, charset));
             }
-        }catch (Exception ex) {
-            //if ex is UnknownHostException, don't record it
-            if (ex instanceof IOException) {
-                return null;
-            }
-            if (ex instanceof ConnectException) {
-                return null;
-            }
-            logger.error("Exception in HTTP invoke " + URL, ex);
+        } catch (IOException ex) {
+            logger.error("error happen when get JSON content", ex);
+            //ignored
         }
         return null;
+    }
+
+    /**
+     * download the content corresponding to the URL
+     * @param URL
+     * @return
+     */
+    @Override
+    public RespContent getContent(String URL) {
+        HttpGet httpGet = buildBaseHttpGet(URL);
+        if (httpGet == null) {
+            return null;
+        }
+        CloseableHttpResponse response = null;
+        try {
+            response = httpClient.execute(httpGet, httpContext.get());
+
+            if (response.getStatusLine().getStatusCode() >= 300) {
+                logger.error("URL:{} , HTTP response: {} {}", URL, response.getStatusLine().getStatusCode(), response.getStatusLine().getReasonPhrase());
+                //here must remember to close the response
+                response.close();
+                return null;
+            } else {
+                Optional<String> fileNameOp;
+
+                HttpEntity entity = response.getEntity();
+                ContentType contentType = ContentType.getOrDefault(entity);
+
+                //if can't auto detect the charset from the response, set the charset to the value configured.
+                Charset charset = contentType.getCharset();
+                if(charset == null || StringUtils.isBlank(charset.name())) {
+                    charset = Charset.forName(Constant.extraConf.getCharset());
+                }
+
+                //rule 1:
+                //if it has attachment, deal with it as stream content
+                if ((fileNameOp = checkAttachment(response, charset.toString())).isPresent()) {
+                    return RespContent.asStream(fileNameOp.get(), response.getEntity().getContent());
+                } else {
+                    //rule 2:
+                    //if this response hasn't contain a attachment, deal with it as a string content whatever it is.
+                    HtmlContent respContent = RespContent.asString(EntityUtils.toString(entity, charset));
+                    response.close();
+                    return respContent;
+                }
+            }
+        }catch (Exception ex) {
+            if (response != null) {
+                try {
+                    response.close();
+                } catch (IOException e) {
+                    //ignored
+                }
+            }
+
+            //if ex is UnknownHostException, don't record it
+            if (ex instanceof IOException || ex instanceof ConnectException) {
+                return null;
+            }
+
+            logger.error("Exception in HTTP invoke " + URL, ex);
+            return null;
+        }
+
     }
 
     @Override

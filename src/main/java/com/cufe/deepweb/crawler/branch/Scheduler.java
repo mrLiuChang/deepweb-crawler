@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.sql2o.Connection;
 import org.sql2o.Sql2o;
+import org.sql2o.Sql2oException;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -77,23 +78,34 @@ public abstract class Scheduler extends Thread{
         logger.info("start initial process");
         WebBrowser browser = this.queryLinkService.getWebBrowser();
 
-        String prefix = Constant.urlBaseConf == null ? Constant.apiBaseConf.getPrefix() : Constant.urlBaseConf.getPrefix();
+        String prefix = "";
+        if (this instanceof UrlBaseScheduler) {
+            prefix = Constant.urlBaseConf.getPrefix();
+        } else if (this instanceof ApiBaseScheduler) {
+            prefix = Constant.apiBaseConf.getPrefix();
+        } else if (this instanceof JsonBaseScheduler) {
+            prefix = Constant.jsonBaseConf.getPrefix();
+        }
 
         //firstly select the search link without parameters
         Optional<String> contentOp = browser.getPageContent(prefix);
+        logger.info("select the search page:{} to generate initial query", prefix);
         if(!contentOp.isPresent() || contentOp.get().trim().equals("")) {
+            logger.info("can't get the search page, select the index page:{} to generate initial query", Constant.webSite.getIndexUrl());
             //if can't get content from search link without parameters, use the index.html of the target site inside
             contentOp = browser.getPageContent(Constant.webSite.getIndexUrl());
             if((!contentOp.isPresent() || contentOp.get().trim().equals("")) && !StringUtils.isBlank(Constant.extraConf.getLoginUrl())) {
+                logger.info("can't get the index page, select the login page:{} to generate initial query", Constant.extraConf.getLoginUrl());
                 contentOp = browser.getPageContent(Constant.extraConf.getLoginUrl());
             }
         }
 
         if (!contentOp.isPresent() || contentOp.get().trim().equals("")) {
+            logger.error("fail to generate initial query, return 0");
             return 0;
         }
 
-        logger.trace("content is " +contentOp.get());
+        logger.trace("content is " + contentOp.get());
         String[] terms = NlpAnalysis.parse(contentOp.get()).toString().split(",");
         Set<String> deduSet = new HashSet<>();
         Random r = new Random(System.currentTimeMillis());
@@ -140,6 +152,10 @@ public abstract class Scheduler extends Thread{
         logger.info("start the M2status");
         //status2: generate the query term
         String curQuery = algo.getNextQuery();
+        if (curQuery == null) {
+            logger.info("can't generate more queries, exit");
+            System.exit(0);
+        }
         logger.info("this turn's query is {}",curQuery);
 
         //status3
@@ -154,7 +170,33 @@ public abstract class Scheduler extends Thread{
         keeper.fixStatus(3,4);
         logger.info("start the M4status");
 
-        status4();
+        ThreadPoolExecutor threadPool = status4();
+        threadPool.shutdown();
+
+        //loop here until all the thread in thread pool exit
+        int stopCount = 20;//a flag to indicate whether to force stop the thread pool
+        while (true) {
+            try {
+                //most of the situation, the thread pool would close after the following block, and jump out the while loop
+                if (threadPool.awaitTermination(Constant.extraConf.getThreadNum(), TimeUnit.SECONDS)) {
+                    break;
+                }
+
+                //but sometimes some thread would block in the net IO and wouldn't wake up
+                //I also don't know why, but it did exist
+                //so need to force close the thread pool in the following clauses
+                if (threadPool.getActiveCount() < threadPool.getCorePoolSize() / 2) {
+                    logger.info("activeCount:{}, poolSize:{}", threadPool.getActiveCount(), threadPool.getCorePoolSize());
+                    stopCount--;
+                    if(stopCount <= 0) {
+                        threadPool.shutdownNow();
+                        break;
+                    }
+                }
+            } catch (InterruptedException ex) {
+                logger.error("interrupted when wait for thread pool");
+            }
+        }
         sLinkNum = keeper.dynamicUpdate();
         keeper.fixStatus(4,0);
         return sLinkNum;
@@ -180,7 +222,9 @@ public abstract class Scheduler extends Thread{
                 totalNum += each;
             }
         }
-        if (sLinkNumList.size() == 10 && totalNum < 10) {
+
+        //only when the all-in algorithm is not used, the above calculation is valid
+        if (sLinkNumList.size() == 10 && totalNum <= 1 && Constant.ALL_IN_NUM == 0) {
             return false;
         }
         return true;
@@ -189,7 +233,7 @@ public abstract class Scheduler extends Thread{
 
 
     protected abstract void status3(String query);
-    protected abstract void status4();
+    protected abstract ThreadPoolExecutor status4();
 
 
     /**
@@ -295,6 +339,7 @@ public abstract class Scheduler extends Thread{
         public synchronized int dynamicUpdate() {
             int sLinkNum = 0;
             try (Connection conn = sql2o.open()) {
+                conn.setRollbackOnException(true);
                 String sql = null;
 
                 //update the last round's fLinkNum and sLinkNum in database's status table
@@ -302,7 +347,8 @@ public abstract class Scheduler extends Thread{
 
                 //update the last round's fLinkNum and sLinkNum in database's status table
                 int fLinkNum = queryLinkService.getFailedLinkNum();
-                sLinkNum = queryLinkService.getTotalLinkNum() - fLinkNum;
+                sLinkNum = queryLinkService.getTotalLinkNum() - queryLinkService.getFailedLinkNum();
+                logger.trace("fLinkNum:{},sLinkNum:{},totalLinkNum:{}", fLinkNum, sLinkNum, queryLinkService.getTotalLinkNum());
                 conn.createQuery(sql)
                         .addParameter("fLinkNum", fLinkNum)
                         .addParameter("sLinkNum", sLinkNum)
@@ -312,7 +358,7 @@ public abstract class Scheduler extends Thread{
                         .executeUpdate();
 
                 fLinkNum = infoLinkService.getFailedLinkNum();
-                sLinkNum = infoLinkService.getTotalLinkNum() - fLinkNum;
+                sLinkNum = infoLinkService.getTotalLinkNum() - infoLinkService.getFailedLinkNum();
                 sLinkNum = sLinkNum > 0 ? sLinkNum : 0;
                 conn.createQuery(sql)
                         .addParameter("fLinkNum", fLinkNum)
@@ -331,6 +377,8 @@ public abstract class Scheduler extends Thread{
                         .executeUpdate();
                 lastSInfoLink = sLinkNum;
                 lastFInfoLink = fLinkNum;
+            } catch (Sql2oException ex) {
+                logger.error("sql2o error when update db", ex);
             }
             return sLinkNum;
         }

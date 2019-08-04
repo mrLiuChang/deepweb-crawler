@@ -6,7 +6,6 @@ import com.cufe.deepweb.common.Utils;
 import com.cufe.deepweb.common.dedu.Deduplicator;
 import com.cufe.deepweb.common.dedu.RAMDocIDDedutor;
 import com.cufe.deepweb.common.index.IndexClient;
-import com.cufe.deepweb.crawler.Constant;
 import com.google.common.base.Stopwatch;
 import org.apache.commons.cli.*;
 import org.slf4j.Logger;
@@ -54,7 +53,10 @@ public class Starter {
         Stopwatch stopwatch = Stopwatch.createStarted();
         init(args);
         //默认使用的field为fulltext
-        AlgorithmBase algo = new LinearIncrementalAlgorithm.Builder(targetClient, dedu).setMainField(field).setInitQuery("consume").build();
+        AlgorithmBase algo;
+        LinearIncrementalAlgorithm.Builder builder = new LinearIncrementalAlgorithm.Builder(targetClient, dedu);
+        builder.setMainField(field);
+        algo = builder.build();
         //当爬取比例小于指定比例时，继续
         while (threshold > dedu.getTotal() / (double)sourceClient.getDocSize()) {
             logger.info("HR:{}", dedu.getTotal() / (double)sourceClient.getDocSize());

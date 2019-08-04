@@ -23,6 +23,11 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * after initializing, there must has a directory
+ * if this is a writable indexClient, there also has a indexWriter
+ * only when the index has data, there would has a indexReader
+ */
 public final class IndexClient implements Closeable {
     private final Logger logger = LoggerFactory.getLogger(IndexClient.class);
     /**
@@ -121,7 +126,7 @@ public final class IndexClient implements Closeable {
     private synchronized void updateIndexReader() {
         try {
             if (!DirectoryReader.indexExists(indexDirectory)) {
-                logger.trace("this index have no data, refuse to initialize indexReader");
+                logger.info("this index have no data, refuse to initialize indexReader");
                 return;
             }
 
@@ -131,7 +136,7 @@ public final class IndexClient implements Closeable {
             } else {//update indexReader
                 if (indexReader instanceof DirectoryReader) {
                     IndexReader ir = DirectoryReader.openIfChanged((DirectoryReader) indexReader);
-                    if(ir != null){
+                    if(ir != null) {
                         logger.trace("update indexReader");
                         indexReader.close();
                         indexReader = ir;
@@ -173,16 +178,28 @@ public final class IndexClient implements Closeable {
             //if index writer has existed
             if (indexWriter != null) {
                 logger.trace("commit indexWriter");
-                indexWriter.commit();
+                try {
+                    indexWriter.commit();
+                } catch (IOException ex) {//often be a AlreadyClosedException here
+                    logger.error("error happen when commit", ex);
+                    indexWriter = null;
+                    updateIndex();//reopen the indexWriter
+                }
+
                 return;
             }
             //every time create a new index writer
             logger.trace("initialize indexWriter");
             IndexWriterConfig config = new IndexWriterConfig(analyzer);
             config.setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND);
-            indexWriter = new IndexWriter(indexDirectory,config);
+            indexWriter = new IndexWriter(indexDirectory, config);
+            indexWriter.commit();
         } catch (IOException ex) {
-            logger.error("IOException happen when create new indexWriter", ex);
+            logger.error("IOException happen when create new indexWriter, exit", ex);
+            //now indexWriter would be null or in an unexpected status
+            //for example, the disk hasn't enough space
+            //can't create an indexWriter, must be an serious exception, should exit
+            System.exit(1);
         }
     }
     /**
@@ -218,8 +235,15 @@ public final class IndexClient implements Closeable {
         }
         try{
             indexWriter.addDocument(doc);
-        }catch (IOException ex){
+        }catch (IOException ex) {//often be a AlreadyClosedException here
             logger.error("error happen when add document",ex);
+            synchronized (this) {
+                if (!indexWriter.isOpen()) {
+                    indexWriter = null;
+                    updateIndex();
+                }
+            }
+
         }
     }
 
@@ -448,6 +472,7 @@ public final class IndexClient implements Closeable {
         logger.trace("start to get all the terms which fit the target bound range");
         try{
             Terms terms = MultiFields.getTerms(indexReader, field);
+            if (terms == null) return Collections.emptyMap();
             TermsEnum termsEnum = terms.iterator();
             while (termsEnum.next() != null) {
                 String term = termsEnum.term().utf8ToString();
@@ -455,11 +480,14 @@ public final class IndexClient implements Closeable {
                     docSetMap.put(term, new HashSet<>());
                 }
             }
+
         }catch (IOException ex){
             logger.error("IOException in read lucene index", ex);
         }
         logger.trace("get terms finish");
-
+        if (docSetMap.size() == 0) {
+            return Collections.emptyMap();
+        }
         ExecutorService service = Executors.newFixedThreadPool(indexReader.leaves().size());//thread pool to operate the sub index
         List<LeafReaderContext> leafList = indexReader.leaves();
         logger.trace("sub index size:{}", leafList.size());

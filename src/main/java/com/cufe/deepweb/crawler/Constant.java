@@ -11,6 +11,11 @@ public final class Constant {
     private Constant() { }
 
     /**
+     * the default all-in-number is 0, indicates that no all in algorithm
+     */
+    public static int ALL_IN_NUM = 0;
+
+    /**
      * the basic configuration of website
      */
     public static WebSite webSite;
@@ -18,6 +23,8 @@ public final class Constant {
     public static UrlBaseConf urlBaseConf;
 
     public static ApiBaseConf apiBaseConf;
+
+    public static JsonBaseConf jsonBaseConf;
 
     /**
      * the extra configuration of website
@@ -92,4 +99,5 @@ public final class Constant {
 
     public final static short URL_BASED = 0;
     public final static short API_BASED = 1;
+    public final static short JSON_BASED = 2;
 }

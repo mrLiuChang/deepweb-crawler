@@ -7,14 +7,14 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Paths;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class ClientTest {
   static IndexClient client;
   @BeforeAll
   static void init() {
-    client = new IndexClient.Builder(Paths.get("F:/experiment/Index6.6.1/Indexjieba21")).setReadOnly().build();
+    client = new IndexClient.Builder(Paths.get("/Users/cwc/Desktop/fulltext")).setReadOnly().build();
+
   }
   @AfterAll
   static void exit() throws Exception {
@@ -33,6 +33,23 @@ public class ClientTest {
     System.out.println(client.getDocSize());
   }
 
+  @Test
+  void printDocumentContent() {
+    int total = client.getDocSize();
+    Set<Integer> docIDSet = new HashSet<>();
+    Random r = new Random();
+    for (int i = 0; i <= 10; i++) {
+      docIDSet.add(r.nextInt(total));
+    }
+    List<String> content = client.loadDocuments("fulltext", docIDSet);
+    content.forEach(System.out::println);
+  }
+  @Test
+  void searchAndPrint() {
+    client.loadDocuments(new ArrayList<>(client.search("fulltext", "浪潮"))).forEach(map -> {
+      System.out.println(map.get("filename") + map.get("link"));
+    });
+  }
   @Test
   void testDocSetMapMemory() {
     System.out.println("record doc set map memory");

@@ -1,6 +1,5 @@
 package com.cufe.deepweb.common.dedu;
 
-import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -17,7 +16,7 @@ public class RAMDocIDDedutor extends Deduplicator<Integer> {
 
     }
     @Override
-    public boolean add(Integer o) {
+    public synchronized boolean add(Integer o) {
         this.costV++;
        if (deduSet.add(o)) {
            this.newV++;
